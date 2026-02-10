@@ -143,7 +143,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type TabControl}">
                     <DockPanel LastChildFill="True">
-                        <Border Name="titlebar" Grid.Row="0" DockPanel.Dock="Top" Visibility="{Binding ChromeVisibility, RelativeSource={RelativeSource FindAncestor, AncestorType=Window}}" Background="#11FFFFFF">
+                        <Border Name="titlebar" Grid.Row="0" DockPanel.Dock="Top" Background="{StaticResource PrimaryBrush}">
                             <DockPanel>
                                 <TabPanel
                                     Grid.Row="0"

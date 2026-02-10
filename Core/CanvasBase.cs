@@ -41,25 +41,29 @@ namespace QQS_UI.Core
         protected static readonly uint[] DefaultKeyColors = new uint[128];
         public readonly uint[] KeyColors = new uint[128];
         public readonly bool[] KeyPressed = new bool[128];
+        public readonly ushort[] KeyTracks = new ushort[128];
         static CanvasBase()
         {
             for (int i = 0; i != 128; ++i)
             {
-                switch (i % 12)
-                {
-                    case 1:
-                    case 3:
-                    case 6:
-                    case 8:
-                    case 10:
-                        // 黑键 black keys
-                        DefaultKeyColors[i] = 0xFF000000;
-                        break;
-                    default:
-                        // 白键 white keys
-                        DefaultKeyColors[i] = 0xFFFFFFFF;
-                        break;
-                }
+                DefaultKeyColors[i] = GetDefaultKeyColor(i);
+            }
+        }
+
+        public static uint GetDefaultKeyColor(int key)
+        {
+            switch (key % 12)
+            {
+                case 1:
+                case 3:
+                case 6:
+                case 8:
+                case 10:
+                    // 黑键 black keys
+                    return 0xFF000000;
+                default:
+                    // 白键 white keys
+                    return 0xFFFFFFFF;
             }
         }
         public CanvasBase(in RenderOptions options)
@@ -101,18 +105,114 @@ namespace QQS_UI.Core
             }
             else
             {
-                if (options.QualityOptions == VideoQualityOptions.CRF)
+                // GPU渲染模式：使用硬件编码器
+                if (options.UseGPURendering)
                 {
-                    _ = ffargs.Append(" -crf ").Append(options.VideoQuality);
+                    _ = ffargs.Append(" -c:v h264_nvenc -preset p4 -tune hq");
+                    if (options.QualityOptions == VideoQualityOptions.CRF)
+                    {
+                        // NVENC使用cq代替crf
+                        _ = ffargs.Append(" -cq ").Append(options.VideoQuality);
+                    }
+                    else
+                    {
+                        _ = ffargs.Append(" -b:v ").Append(options.VideoQuality).Append("k -maxrate ").Append(options.VideoQuality).Append("k -minrate ")
+                            .Append(options.VideoQuality).Append("k -bufsize ").Append(options.VideoQuality * 2).Append('k');
+                    }
                 }
                 else
                 {
-                    _ = ffargs.Append(" -b:v ").Append(options.VideoQuality).Append("k -maxrate ").Append(options.VideoQuality).Append("k -minrate ")
-                        .Append(options.VideoQuality).Append("k -bufsize ").Append(options.VideoQuality).Append('k');
+                    // CPU渲染模式
+                    if (options.QualityOptions == VideoQualityOptions.CRF)
+                    {
+                        _ = ffargs.Append(" -crf ").Append(options.VideoQuality);
+                    }
+                    else
+                    {
+                        _ = ffargs.Append(" -b:v ").Append(options.VideoQuality).Append("k -maxrate ").Append(options.VideoQuality).Append("k -minrate ")
+                            .Append(options.VideoQuality).Append("k -bufsize ").Append(options.VideoQuality).Append('k');
+                    }
                 }
                 _ = ffargs.Append(" \"").Append(options.Output).Append("\"");
             }
             pipe = new FFMpeg(ffargs.ToString(), width, height);
+
+            for (int i = 0; i != 128; ++i)
+            {
+                keyx[i] = ((i / 12 * 126) + Global.GenKeyX[i % 12]) * width / 1350;
+            }
+            for (int i = 0; i != 127; ++i)
+            {
+                int val;
+                switch (i % 12)
+                {
+                    case 1:
+                    case 3:
+                    case 6:
+                    case 8:
+                    case 10:
+                        val = width * 9 / 1350;
+                        break;
+                    case 4:
+                    case 11:
+                        val = keyx[i + 1] - keyx[i];
+                        break;
+                    default:
+                        val = keyx[i + 2] - keyx[i];
+                        break;
+                }
+                keyw[i] = val;
+            }
+            keyw[127] = width - keyx[127];
+
+            if (options.ThinnerNotes)
+            {
+                for (int i = 0; i != 127; ++i)
+                {
+                    switch (i % 12)
+                    {
+                        case 1:
+                        case 3:
+                        case 6:
+                        case 8:
+                        case 10:
+                            notew[i] = keyw[i];
+                            break;
+                        case 0:
+                        case 5:
+                            notew[i] = keyx[i + 1] - keyx[i];
+                            break;
+                        default:
+                            notew[i] = keyx[i + 1] - keyx[i - 1] - keyw[i - 1];
+                            break;
+                    }
+                }
+                for (int i = 0; i != 127; ++i)
+                {
+                    switch (i % 12)
+                    {
+                        case 0:
+                        case 5:
+                        case 1:
+                        case 3:
+                        case 6:
+                        case 8:
+                        case 10:
+                            notex[i] = keyx[i];
+                            break;
+                        default:
+                            notex[i] = keyx[i - 1] + notew[i - 1];
+                            break;
+                    }
+                }
+                notex[127] = keyx[126] + keyw[126];
+                notew[127] = width - notex[127];
+            }
+            else
+            {
+                Array.Copy(keyx, notex, 128);
+                Array.Copy(keyw, notew, 128);
+            }
 
             frame = (uint*)UnsafeMemory.Allocate(frameSize + ((uint)width * 4ul)); // malloc
             // 使用此方法: Call UnsafeMemory.Set in order to:
@@ -137,7 +237,16 @@ namespace QQS_UI.Core
             }
         }
 
-        public void Dispose()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetNoteX(int key) => notex[key];
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetKeyX(int key) => keyx[key];
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetNoteWidth(int key) => notew[key];
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetKeyWidth(int key) => keyw[key];
+
+        public virtual void Dispose()
         {
             pipe.Dispose();
             if (frame != null)
@@ -208,7 +317,7 @@ namespace QQS_UI.Core
         /// Clear the canvas immediately.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Clear()
+        public virtual void Clear()
         {
             fixed (uint* dst = KeyColors, src = DefaultKeyColors)
             {
@@ -225,9 +334,29 @@ namespace QQS_UI.Core
         /// Write current frame to ffmpeg.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void WriteFrame()
+        public virtual void WriteFrame()
         {
             pipe.WriteFrame(frame);
         }
+
+        /// <summary>
+        /// 绘制琴键
+        /// </summary>
+        public virtual void DrawKeys() { }
+
+        /// <summary>
+        /// 绘制渐变琴键
+        /// </summary>
+        public virtual void DrawGradientKeys() { }
+
+        /// <summary>
+        /// 绘制音符
+        /// </summary>
+        public virtual void DrawNote(short key, int track, int y, int height, uint color, bool pressed) { }
+
+        /// <summary>
+        /// 绘制渐变音符
+        /// </summary>
+        public virtual void DrawGradientNote(short key, int track, int y, int height, bool pressed) { }
     }
 }

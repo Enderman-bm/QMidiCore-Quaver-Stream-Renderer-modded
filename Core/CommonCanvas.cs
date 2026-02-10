@@ -16,7 +16,6 @@ namespace QQS_UI.Core
         private readonly RGBAColor[] UnpressedWhiteKeyGradients;
         private readonly RGBAColor[] BorderColors;
         private readonly RGBAColor[] DenseNoteColors;
-        public readonly ushort[] KeyTracks = new ushort[128];
         private readonly bool enableGradient;
         private readonly bool separator;
         private readonly bool betterBlackKeys;
@@ -72,83 +71,6 @@ namespace QQS_UI.Core
             }
 
             UnpressedWhiteKeyGradients = new RGBAColor[keyh - (whiteKeyShade ? (keyh / 20) : 0)];
-            for (int i = 0; i != 128; ++i)
-            {
-                keyx[i] = ((i / 12 * 126) + Global.GenKeyX[i % 12]) * width / 1350;
-            }
-            for (int i = 0; i != 127; ++i)
-            {
-                int val;
-                switch (i % 12)
-                {
-                    case 1:
-                    case 3:
-                    case 6:
-                    case 8:
-                    case 10:
-                        val = width * 9 / 1350;
-                        break;
-                    case 4:
-                    case 11:
-                        val = keyx[i + 1] - keyx[i];
-                        break;
-                    default:
-                        val = keyx[i + 2] - keyx[i];
-                        break;
-                }
-                keyw[i] = val;
-            }
-            keyw[127] = width - keyx[127];
-
-            if (options.ThinnerNotes)
-            {
-                for (int i = 0; i != 127; ++i)
-                {
-                    switch (i % 12)
-                    {
-                        case 1:
-                        case 3:
-                        case 6:
-                        case 8:
-                        case 10:
-                            notew[i] = keyw[i];
-                            break;
-                        case 0:
-                        case 5:
-                            notew[i] = keyx[i + 1] - keyx[i];
-                            break;
-                        default:
-                            notew[i] = keyx[i + 1] - keyx[i - 1] - keyw[i - 1];
-                            break;
-                    }
-                }
-                for (int i = 0; i != 127; ++i)
-                {
-                    switch (i % 12)
-                    {
-                        case 0:
-                        case 5:
-                        case 1:
-                        case 3:
-                        case 6:
-                        case 8:
-                        case 10:
-                            notex[i] = keyx[i];
-                            break;
-                        default:
-                            notex[i] = keyx[i - 1] + notew[i - 1];
-                            break;
-                    }
-                }
-                notex[127] = keyx[126] + keyw[126];
-                notew[127] = width - notex[127];
-            }
-            else
-            {
-                Array.Copy(keyx, notex, 128);
-                Array.Copy(keyw, notew, 128);
-            }
-
             // 音符不透明度与255.0的比值
             double alphaRatio = Global.NoteAlpha / 255.0;
             // 末颜色与初颜色的比值
@@ -303,31 +225,11 @@ namespace QQS_UI.Core
                 }
             }
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetNoteX(int key)
-        {
-            return notex[key];
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetKeyX(int key)
-        {
-            return keyx[key];
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetNoteWidth(int key)
-        {
-            return notew[key];
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetKeyWidth(int key)
-        {
-            return keyw[key];
-        }
         /// <summary>
         /// 绘制所有的琴键.<br/>
         /// Draw all keys.
         /// </summary>
-        public void DrawKeys()
+        public override void DrawKeys()
         {
             if (keyh == 0)
             {
@@ -379,7 +281,7 @@ namespace QQS_UI.Core
                 }
             }
         }
-        public void DrawGradientKeys()
+        public override void DrawGradientKeys()
         {
             if (keyh == 0)
             {
@@ -454,7 +356,7 @@ namespace QQS_UI.Core
             }
             //FillRectangle(0, keyh - 2, width, keyh / 15, lineColor);
         }
-        public new void Dispose()
+        public override void Dispose()
         {
             base.Dispose();
             GC.SuppressFinalize(this);
@@ -468,7 +370,7 @@ namespace QQS_UI.Core
         /// Draws a note.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void DrawNote(short key, int colorIndex, int y, int height, uint noteColor, bool pressed)
+        public override void DrawNote(short key, int colorIndex, int y, int height, uint noteColor, bool pressed)
         {
             if (height < 1)
             {
@@ -574,7 +476,7 @@ namespace QQS_UI.Core
             }
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void DrawGradientNote(short key, int colorIndex, int y, int height, bool pressed)
+        public override void DrawGradientNote(short key, int colorIndex, int y, int height, bool pressed)
         {
             if (height < 1)
             {

@@ -1,4 +1,4 @@
-﻿using SharpExtension;
+using SharpExtension;
 using SharpExtension.Collections;
 using System;
 using System.Collections.Generic;
@@ -13,16 +13,43 @@ namespace QQS_UI.Core
 {
     public sealed class CommonRenderer : RendererBase
     {
-        private readonly CommonCanvas canvas;
+        private readonly CanvasBase canvas;
+        private readonly OpenCLCanvas? openCLCanvas;
         private readonly bool drawMiddleSquare;
         private readonly bool gradientNotes;
         private readonly bool thinnerNotes;
         private readonly bool whiteKeyShade;
         private readonly double delayStart;
         private readonly ParallelOptions parallelOptions;
+        private readonly bool useGPU;
+        
         public CommonRenderer(RenderFile file, in RenderOptions options) : base(file, options)
         {
-            canvas = new CommonCanvas(options);
+            if (options.UseGPURendering && OpenCLContext.IsAvailable)
+            {
+                try
+                {
+                    openCLCanvas = new OpenCLCanvas(options);
+                    canvas = openCLCanvas;
+                    useGPU = true;
+                    Console.WriteLine("ʹ��GPU��Ⱦģʽ");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"GPU��ʼ��ʧ�ܣ����˵�CPU��Ⱦ: {ex.Message}");
+                    useGPU = false;
+                    openCLCanvas = null;
+                    canvas = new CommonCanvas(options);
+                }
+            }
+            else
+            {
+                useGPU = false;
+                openCLCanvas = null;
+                canvas = new CommonCanvas(options);
+                Console.WriteLine("ʹ��CPU��Ⱦģʽ");
+            }
+            
             drawMiddleSquare = options.DrawGreySquare;
             gradientNotes = options.Gradient;
             thinnerNotes = options.ThinnerNotes;
@@ -88,13 +115,20 @@ namespace QQS_UI.Core
 
             int delayFrames = (int)(delayStart * fps);
             canvas.Clear();
-            if (gradientNotes)
+            if (useGPU)
             {
-                canvas.DrawGradientKeys();
+                openCLCanvas!.DrawKeysGPU();
             }
             else
             {
-                canvas.DrawKeys();
+                if (gradientNotes)
+                {
+                    canvas.DrawGradientKeys();
+                }
+                else
+                {
+                    canvas.DrawKeys();
+                }
             }
             for (int i = 0; i != delayFrames; ++i)
             {
@@ -123,7 +157,7 @@ namespace QQS_UI.Core
                 {
                     break;
                 }
-                // 使用并行 for 循环提高性能.
+                // ʹ�ò��� for ѭ���������.
                 _ = Parallel.For(0, 128, parallelOptions,
                     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
                     (i) =>
@@ -152,7 +186,7 @@ namespace QQS_UI.Core
                             }
                             if (noteptr->Start < tick)
                             {
-                                k = keyHeight;
+                                k = (uint)keyHeight;
                                 j = (uint)((noteptr->End - tick) * ppb);
                                 canvas.KeyColors[i] = l;
                                 canvas.KeyPressed[i] = true;
@@ -169,25 +203,40 @@ namespace QQS_UI.Core
                                 j = height - k;
                             }
                             l = Global.NoteColors[noteptr->Track % colorLen];
-                            if (gradientNotes)
+                            if (useGPU)
                             {
-                                canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed);
                             }
                             else
                             {
-                                canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                if (gradientNotes)
+                                {
+                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                }
+                                else
+                                {
+                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                }
                             }
                         }
                         ++noteptr;
                     }
                 });
-                if (gradientNotes)
+                if (useGPU)
                 {
-                    canvas.DrawGradientKeys();
+                    openCLCanvas!.DrawNotesGPU();
+                    openCLCanvas!.DrawKeysGPU();
                 }
                 else
                 {
-                    canvas.DrawKeys();
+                    if (gradientNotes)
+                    {
+                        canvas.DrawGradientKeys();
+                    }
+                    else
+                    {
+                        canvas.DrawKeys();
+                    }
                 }
                 if (drawMiddleSquare)
                 {
@@ -214,13 +263,20 @@ namespace QQS_UI.Core
                 }
             }
             canvas.Clear();
-            if (gradientNotes)
+            if (useGPU)
             {
-                canvas.DrawGradientKeys();
+                openCLCanvas!.DrawKeysGPU();
             }
             else
             {
-                canvas.DrawKeys();
+                if (gradientNotes)
+                {
+                    canvas.DrawGradientKeys();
+                }
+                else
+                {
+                    canvas.DrawKeys();
+                }
             }
             for (int i = 0; i != 3 * fps; i++)
             {
@@ -273,13 +329,20 @@ namespace QQS_UI.Core
             int colorLen = Global.KeyColors.Length;
             int delayFrames = (int)delayStart * fps;
             canvas.Clear();
-            if (gradientNotes)
+            if (useGPU)
             {
-                canvas.DrawGradientKeys();
+                openCLCanvas!.DrawKeysGPU();
             }
             else
             {
-                canvas.DrawKeys();
+                if (gradientNotes)
+                {
+                    canvas.DrawGradientKeys();
+                }
+                else
+                {
+                    canvas.DrawKeys();
+                }
             }
             for (int i = 0; i != delayFrames; ++i)
             {
@@ -308,7 +371,7 @@ namespace QQS_UI.Core
                 {
                     break;
                 }
-                // 使用并行 for 循环提高性能.
+                // ʹ�ò��� for ѭ���������.
                 _ = Parallel.For(0, 75, parallelOptions, [MethodImpl(MethodImplOptions.AggressiveOptimization)] (i) =>
                 {
                     i = Global.DrawMap[i];
@@ -336,7 +399,7 @@ namespace QQS_UI.Core
                             }
                             if (noteptr->Start < tick)
                             {
-                                k = keyHeight;
+                                k = (uint)keyHeight;
                                 j = (uint)((noteptr->End - tick) * ppb);
                                 canvas.KeyColors[i] = l;
                                 canvas.KeyPressed[i] = true;
@@ -352,13 +415,21 @@ namespace QQS_UI.Core
                             {
                                 j = height - k;
                             }
-                            if (gradientNotes)
+                            l = Global.NoteColors[noteptr->Track % colorLen];
+                            if (useGPU)
                             {
-                                canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed);
                             }
                             else
                             {
-                                canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                if (gradientNotes)
+                                {
+                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                }
+                                else
+                                {
+                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                }
                             }
                         }
                         ++noteptr;
@@ -391,7 +462,7 @@ namespace QQS_UI.Core
                             }
                             if (noteptr->Start < tick)
                             {
-                                k = keyHeight;
+                                k = (uint)keyHeight;
                                 j = (uint)((noteptr->End - tick) * ppb);
                                 canvas.KeyColors[i] = l;
                                 canvas.KeyPressed[i] = true;
@@ -407,25 +478,41 @@ namespace QQS_UI.Core
                             {
                                 j = height - k;
                             }
-                            if (gradientNotes)
+                            l = Global.NoteColors[noteptr->Track % colorLen];
+                            if (useGPU)
                             {
-                                canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed);
                             }
                             else
                             {
-                                canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                if (gradientNotes)
+                                {
+                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                }
+                                else
+                                {
+                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                }
                             }
                         }
                         ++noteptr;
                     }
                 });
-                if (gradientNotes)
+                if (useGPU)
                 {
-                    canvas.DrawGradientKeys();
+                    openCLCanvas!.DrawNotesGPU();
+                    openCLCanvas!.DrawKeysGPU();
                 }
                 else
                 {
-                    canvas.DrawKeys();
+                    if (gradientNotes)
+                    {
+                        canvas.DrawGradientKeys();
+                    }
+                    else
+                    {
+                        canvas.DrawKeys();
+                    }
                 }
                 if (drawMiddleSquare)
                 {
@@ -473,7 +560,14 @@ namespace QQS_UI.Core
 
         public void Dispose()
         {
-            canvas.Dispose();
+            if (useGPU && openCLCanvas != null)
+            {
+                openCLCanvas.Dispose();
+            }
+            else if (canvas != null)
+            {
+                canvas.Dispose();
+            }
             GC.SuppressFinalize(this);
         }
 

@@ -26,6 +26,7 @@ namespace QQS_UI.Core
         public bool BetterBlackKeys;
         public bool WhiteKeyShade;
         public bool BrighterNotesOnHit;
+        public bool UseGPURendering;
         public int Width, Height, FPS, VideoQuality, KeyHeight, PressedNotesShadeDecrement;
         public VideoQualityOptions QualityOptions;
         public VerticalGradientDirection KeyboardGradientDirection;
@@ -54,6 +55,7 @@ namespace QQS_UI.Core
                 WhiteKeyShade = true,
                 DrawSeparator = true,
                 PreviewMode = false,
+                UseGPURendering = true,
                 AdditionalFFMpegArgument = string.Empty,
                 DrawGreySquare = false,
                 Gradient = true,

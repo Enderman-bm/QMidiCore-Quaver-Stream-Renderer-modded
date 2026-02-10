@@ -682,6 +682,11 @@ namespace QQS_UI
             options.PressedNotesShadeDecrement = 255 - (int)e.NewValue;
         }
 
+        private void useGPURendering_CheckToggled(object sender, RoutedPropertyChangedEventArgs<bool> e)
+        {
+            options.UseGPURendering = e.NewValue;
+        }
+
         private void loadBmpColors_Click(object sender, RoutedEventArgs e)
         {
             string imagePath = colorBmpPath.Text;

@@ -422,6 +422,9 @@
                                     </ui:NumberSelect.IsEnabled>
                                 </ui:NumberSelect>
                             </DockPanel>
+                            <DockPanel Margin="0,10,0,0">
+                                <ui:BetterCheckbox Text="使用GPU渲染 (h264_nvenc)" HorizontalAlignment="Left" IsChecked="True" x:Name="useGPURendering" CheckToggled="useGPURendering_CheckToggled" IsEnabled="{DynamicResource notRenderingOrPreviewing}"/>
+                            </DockPanel>
                             <DockPanel Margin="0,5,0,0">
                                 <Label Content="FPS:" HorizontalAlignment="Left" Width="150"/>
                                 <ui:NumberSelect Minimum="15" Maximum="480" Value="60" x:Name="fps" HorizontalAlignment="Left" Width="100" ValueChanged="fps_ValueChanged" IsEnabled="{DynamicResource notRenderingOrPreviewing}"/>
