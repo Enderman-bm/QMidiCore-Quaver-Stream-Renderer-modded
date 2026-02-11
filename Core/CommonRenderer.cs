@@ -32,11 +32,11 @@ namespace QQS_UI.Core
                     openCLCanvas = new OpenCLCanvas(options);
                     canvas = openCLCanvas;
                     useGPU = true;
-                    Console.WriteLine("ʹ��GPU��Ⱦģʽ");
+                    Console.WriteLine("使用GPU渲染模式");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"GPU��ʼ��ʧ�ܣ����˵�CPU��Ⱦ: {ex.Message}");
+                    Console.WriteLine($"GPU初始化失败，切换到CPU渲染: {ex.Message}");
                     useGPU = false;
                     openCLCanvas = null;
                     canvas = new CommonCanvas(options);
@@ -47,7 +47,7 @@ namespace QQS_UI.Core
                 useGPU = false;
                 openCLCanvas = null;
                 canvas = new CommonCanvas(options);
-                Console.WriteLine("ʹ��CPU��Ⱦģʽ");
+                Console.WriteLine("使用CPU渲染模式");
             }
             
             drawMiddleSquare = options.DrawGreySquare;
@@ -77,9 +77,6 @@ namespace QQS_UI.Core
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private unsafe void Render_Thinner()
         {
-            // Pixels per beat.
-            // eval "spd":
-            // spd = 1000000.0 * ppq / [tempo] / fps
             double ppb = 520.0 / ppq * noteSpeed;
             double fileTick = renderFile.MidiTime;
             double tick = 0, tickup, spd = ppq * 2.0 / fps;
@@ -88,8 +85,9 @@ namespace QQS_UI.Core
             long spdCount = tempos.Count;
             double deltaTicks = (height - keyHeight) / ppb;
 
-            Note** noteBegins = stackalloc Note*[128];
-            Note** end = stackalloc Note*[128];
+            // Use NoteRef* for zero-copy access
+            NoteRef** noteBegins = stackalloc NoteRef*[128];
+            NoteRef** end = stackalloc NoteRef*[128];
 
             Stopwatch frameWatch = new Stopwatch();
             double frameLen = 10000000.0 / fps;
@@ -99,12 +97,14 @@ namespace QQS_UI.Core
             int greySquareY = (int)keyHeight * 2 / 15;
             int greySquareLeft = middleCx + (middleCwidth / 4);
             int greySquareWidth = middleCwidth * 2 / 4;
+            
             for (int i = 0; i != 128; ++i)
             {
-                if (noteMap[i].Count != 0)
+                long count = renderFile.NoteCounts[i];
+                if (count != 0)
                 {
-                    noteBegins[i] = (Note*)UnsafeMemory.GetActualAddressOf(ref noteMap[i][0]);
-                    end[i] = noteBegins[i] + noteMap[i].Count;
+                    noteBegins[i] = renderFile.NotePointers[i];
+                    end[i] = noteBegins[i] + count;
                 }
                 else
                 {
@@ -150,6 +150,8 @@ namespace QQS_UI.Core
                 tickup = tick + deltaTicks;
                 while (spdidx != spdCount && tempos[spdidx].Tick < tick)
                 {
+                    // tempo.Value 是每四分音符所需的微秒数 (μs per quarter note)
+                    // 期望的公式: spd = 1e6 / tempo * ppq / fps (ticks per frame)
                     spd = 1e6 / tempos[spdidx].Value * ppq / fps;
                     ++spdidx;
                 }
@@ -157,71 +159,91 @@ namespace QQS_UI.Core
                 {
                     break;
                 }
-                // ʹ�ò��� for ѭ���������.
-                _ = Parallel.For(0, 128, parallelOptions,
-                    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-                    (i) =>
+                if (useGPU)
                 {
-                    if (noteBegins[i] == null)
+                    // GPU模式：批量收集音符数据，避免CPU并行循环
+                    for (int i = 0; i != 128; ++i)
                     {
-                        return; // no notes available
-                    }
-                    uint j, k, l;
-                    bool flag = false;
-                    Note* noteptr = noteBegins[i];
-                    bool isCurrentNotePressed;
-                    while (noteptr->Start < tickup)
-                    {
-                        isCurrentNotePressed = false;
-                        if (noteptr == end[i])
+                        if (noteBegins[i] == null) continue;
+                        uint j, k, l;
+                        bool flag = false;
+                        NoteRef* noteptr = noteBegins[i];
+                        bool isCurrentNotePressed;
+                        while (noteptr->Start < tickup)
                         {
-                            break;
-                        }
-                        if (noteptr->End >= tick)
-                        {
-                            l = Global.KeyColors[noteptr->Track % colorLen];
-                            if (!flag && (flag = true))
+                            isCurrentNotePressed = false;
+                            if (noteptr == end[i]) break;
+                            if (noteptr->End >= tick)
                             {
-                                noteBegins[i] = noteptr;
-                            }
-                            if (noteptr->Start < tick)
-                            {
-                                k = (uint)keyHeight;
-                                j = (uint)((noteptr->End - tick) * ppb);
-                                canvas.KeyColors[i] = l;
-                                canvas.KeyPressed[i] = true;
-                                canvas.KeyTracks[i] = noteptr->Track;
-                                isCurrentNotePressed = true;
-                            }
-                            else
-                            {
-                                k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
-                                j = (uint)((noteptr->End - noteptr->Start) * ppb);
-                            }
-                            if (j + k > height)
-                            {
-                                j = height - k;
-                            }
-                            l = Global.NoteColors[noteptr->Track % colorLen];
-                            if (useGPU)
-                            {
-                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed);
-                            }
-                            else
-                            {
-                                if (gradientNotes)
+                                l = Global.KeyColors[noteptr->Track % colorLen];
+                                if (!flag && (flag = true)) noteBegins[i] = noteptr;
+                                if (noteptr->Start < tick)
                                 {
-                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                    k = (uint)keyHeight;
+                                    j = (uint)((noteptr->End - tick) * ppb);
+                                    canvas.KeyColors[i] = l;
+                                    canvas.KeyPressed[i] = true;
+                                    canvas.KeyTracks[i] = noteptr->Track;
+                                    isCurrentNotePressed = true;
                                 }
                                 else
                                 {
-                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                    k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
+                                    j = (uint)((noteptr->End - noteptr->Start) * ppb);
                                 }
+                                if (j + k > height) j = height - k;
+                                l = Global.NoteColors[noteptr->Track % colorLen];
+                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed, noteptr->Track % colorLen);
                             }
+                            ++noteptr;
                         }
-                        ++noteptr;
                     }
-                });
+                }
+                else
+                {
+                    // CPU模式：使用并行循环
+                    _ = Parallel.For(0, 128, parallelOptions,
+                        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+                        (i) =>
+                    {
+                        if (noteBegins[i] == null) return;
+                        uint j, k, l;
+                        bool flag = false;
+                        NoteRef* noteptr = noteBegins[i];
+                        bool isCurrentNotePressed;
+                        while (noteptr->Start < tickup)
+                        {
+                            isCurrentNotePressed = false;
+                            if (noteptr == end[i]) break;
+                            if (noteptr->End >= tick)
+                            {
+                                l = Global.KeyColors[noteptr->Track % colorLen];
+                                if (!flag && (flag = true)) noteBegins[i] = noteptr;
+                                if (noteptr->Start < tick)
+                                {
+                                    k = (uint)keyHeight;
+                                    j = (uint)((noteptr->End - tick) * ppb);
+                                    canvas.KeyColors[i] = l;
+                                    canvas.KeyPressed[i] = true;
+                                    canvas.KeyTracks[i] = noteptr->Track;
+                                    isCurrentNotePressed = true;
+                                }
+                                else
+                                {
+                                    k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
+                                    j = (uint)((noteptr->End - noteptr->Start) * ppb);
+                                }
+                                if (j + k > height) j = height - k;
+                                l = Global.NoteColors[noteptr->Track % colorLen];
+                                if (gradientNotes)
+                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                else
+                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed);
+                            }
+                            ++noteptr;
+                        }
+                    });
+                }
                 if (useGPU)
                 {
                     openCLCanvas!.DrawNotesGPU();
@@ -292,9 +314,6 @@ namespace QQS_UI.Core
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private unsafe void Render_Wider()
         {
-            // Pixels per beat.
-            // eval "spd":
-            // spd = 1000000.0 * ppq / [tempo] / fps
             double ppb = 520.0 / ppq * noteSpeed;
             double fileTick = renderFile.MidiTime;
             double tick = 0, tickup, spd = ppq * 2.0 / fps;
@@ -303,8 +322,8 @@ namespace QQS_UI.Core
             long spdCount = tempos.Count;
             double deltaTicks = (height - keyHeight) / ppb;
 
-            Note** noteBegins = stackalloc Note*[128];
-            Note** end = stackalloc Note*[128];
+            NoteRef** noteBegins = stackalloc NoteRef*[128];
+            NoteRef** end = stackalloc NoteRef*[128];
 
             Stopwatch frameWatch = new Stopwatch();
             double frameLen = 10000000.0 / fps;
@@ -314,12 +333,14 @@ namespace QQS_UI.Core
             int greySquareY = (int)keyHeight * 2 / 15;
             int greySquareLeft = middleCx + (middleCwidth / 4);
             int greySquareWidth = middleCwidth * 2 / 4;
+            
             for (int i = 0; i != 128; ++i)
             {
-                if (noteMap[i].Count != 0)
+                long count = renderFile.NoteCounts[i];
+                if (count != 0)
                 {
-                    noteBegins[i] = (Note*)UnsafeMemory.GetActualAddressOf(ref noteMap[i][0]);
-                    end[i] = noteBegins[i] + noteMap[i].Count;
+                    noteBegins[i] = renderFile.NotePointers[i];
+                    end[i] = noteBegins[i] + count;
                 }
                 else
                 {
@@ -327,7 +348,7 @@ namespace QQS_UI.Core
                 }
             }
             int colorLen = Global.KeyColors.Length;
-            int delayFrames = (int)delayStart * fps;
+            int delayFrames = (int)(delayStart * fps);
             canvas.Clear();
             if (useGPU)
             {
@@ -364,6 +385,8 @@ namespace QQS_UI.Core
                 tickup = tick + deltaTicks;
                 while (spdidx != spdCount && tempos[spdidx].Tick < tick)
                 {
+                    // tempo.Value 是每四分音符所需的微秒数 (μs per quarter note)
+                    // 期望的公式: spd = 1e6 / tempo * ppq / fps (ticks per frame)
                     spd = 1e6 / tempos[spdidx].Value * ppq / fps;
                     ++spdidx;
                 }
@@ -371,133 +394,131 @@ namespace QQS_UI.Core
                 {
                     break;
                 }
-                // ʹ�ò��� for ѭ���������.
-                _ = Parallel.For(0, 75, parallelOptions, [MethodImpl(MethodImplOptions.AggressiveOptimization)] (i) =>
+                if (useGPU)
                 {
-                    i = Global.DrawMap[i];
-                    if (noteBegins[i] == null)
+                    // GPU模式：批量收集音符数据，避免CPU并行循环
+                    for (int idx = 0; idx < 128; ++idx)
                     {
-                        return; // no notes available
-                    }
-                    uint j, k, l;
-                    bool flag = false;
-                    bool isCurrentNotePressed;
-                    Note* noteptr = noteBegins[i];
-                    while (noteptr->Start < tickup)
-                    {
-                        isCurrentNotePressed = false;
-                        if (noteptr == end[i])
+                        int i = Global.DrawMap[idx];
+                        if (noteBegins[i] == null) continue;
+                        uint j, k, l;
+                        bool flag = false;
+                        bool isCurrentNotePressed;
+                        NoteRef* noteptr = noteBegins[i];
+                        while (noteptr->Start < tickup)
                         {
-                            break;
-                        }
-                        if (noteptr->End >= tick)
-                        {
-                            l = Global.KeyColors[noteptr->Track % colorLen];
-                            if (!flag && (flag = true))
+                            isCurrentNotePressed = false;
+                            if (noteptr == end[i]) break;
+                            if (noteptr->End >= tick)
                             {
-                                noteBegins[i] = noteptr;
-                            }
-                            if (noteptr->Start < tick)
-                            {
-                                k = (uint)keyHeight;
-                                j = (uint)((noteptr->End - tick) * ppb);
-                                canvas.KeyColors[i] = l;
-                                canvas.KeyPressed[i] = true;
-                                canvas.KeyTracks[i] = noteptr->Track;
-                                isCurrentNotePressed = true;
-                            }
-                            else
-                            {
-                                k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
-                                j = (uint)((noteptr->End - noteptr->Start) * ppb);
-                            }
-                            if (j + k > height)
-                            {
-                                j = height - k;
-                            }
-                            l = Global.NoteColors[noteptr->Track % colorLen];
-                            if (useGPU)
-                            {
-                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed);
-                            }
-                            else
-                            {
-                                if (gradientNotes)
+                                l = Global.KeyColors[noteptr->Track % colorLen];
+                                if (!flag && (flag = true)) noteBegins[i] = noteptr;
+                                if (noteptr->Start < tick)
                                 {
-                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                    k = (uint)keyHeight;
+                                    j = (uint)((noteptr->End - tick) * ppb);
+                                    canvas.KeyColors[i] = l;
+                                    canvas.KeyPressed[i] = true;
+                                    canvas.KeyTracks[i] = noteptr->Track;
+                                    isCurrentNotePressed = true;
                                 }
                                 else
                                 {
-                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                    k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
+                                    j = (uint)((noteptr->End - noteptr->Start) * ppb);
                                 }
+                                if (j + k > height) j = height - k;
+                                l = Global.NoteColors[noteptr->Track % colorLen];
+                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed, noteptr->Track % colorLen);
                             }
+                            ++noteptr;
                         }
-                        ++noteptr;
                     }
-                });
-                _ = Parallel.For(75, 128, parallelOptions, [MethodImpl(MethodImplOptions.AggressiveOptimization)] (i) =>
+                }
+                else
                 {
-                    i = Global.DrawMap[i];
-                    if (noteBegins[i] == null)
+                    // CPU模式：使用并行循环
+                    _ = Parallel.For(0, 75, parallelOptions, [MethodImpl(MethodImplOptions.AggressiveOptimization)] (i) =>
                     {
-                        return; // no notes available
-                    }
-                    uint j, k, l;
-                    bool flag = false;
-                    bool isCurrentNotePressed;
-                    Note* noteptr = noteBegins[i];
-                    while (noteptr->Start < tickup)
-                    {
-                        isCurrentNotePressed = false;
-                        if (noteptr == end[i])
+                        i = Global.DrawMap[i];
+                        if (noteBegins[i] == null) return;
+                        uint j, k, l;
+                        bool flag = false;
+                        bool isCurrentNotePressed;
+                        NoteRef* noteptr = noteBegins[i];
+                        while (noteptr->Start < tickup)
                         {
-                            break;
-                        }
-                        if (noteptr->End >= tick)
-                        {
-                            l = Global.KeyColors[noteptr->Track % colorLen];
-                            if (!flag && (flag = true))
+                            isCurrentNotePressed = false;
+                            if (noteptr == end[i]) break;
+                            if (noteptr->End >= tick)
                             {
-                                noteBegins[i] = noteptr;
-                            }
-                            if (noteptr->Start < tick)
-                            {
-                                k = (uint)keyHeight;
-                                j = (uint)((noteptr->End - tick) * ppb);
-                                canvas.KeyColors[i] = l;
-                                canvas.KeyPressed[i] = true;
-                                canvas.KeyTracks[i] = noteptr->Track;
-                                isCurrentNotePressed = true;
-                            }
-                            else
-                            {
-                                k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
-                                j = (uint)((noteptr->End - noteptr->Start) * ppb);
-                            }
-                            if (j + k > height)
-                            {
-                                j = height - k;
-                            }
-                            l = Global.NoteColors[noteptr->Track % colorLen];
-                            if (useGPU)
-                            {
-                                openCLCanvas!.AddNoteGPU(i, (int)k, (int)j, l, isCurrentNotePressed);
-                            }
-                            else
-                            {
-                                if (gradientNotes)
+                                l = Global.KeyColors[noteptr->Track % colorLen];
+                                if (!flag && (flag = true)) noteBegins[i] = noteptr;
+                                if (noteptr->Start < tick)
                                 {
-                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                    k = (uint)keyHeight;
+                                    j = (uint)((noteptr->End - tick) * ppb);
+                                    canvas.KeyColors[i] = l;
+                                    canvas.KeyPressed[i] = true;
+                                    canvas.KeyTracks[i] = noteptr->Track;
+                                    isCurrentNotePressed = true;
                                 }
                                 else
                                 {
-                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed); // each key is individual
+                                    k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
+                                    j = (uint)((noteptr->End - noteptr->Start) * ppb);
                                 }
+                                if (j + k > height) j = height - k;
+                                l = Global.NoteColors[noteptr->Track % colorLen];
+                                if (gradientNotes)
+                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                else
+                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed);
                             }
+                            ++noteptr;
                         }
-                        ++noteptr;
-                    }
-                });
+                    });
+                    _ = Parallel.For(75, 128, parallelOptions, [MethodImpl(MethodImplOptions.AggressiveOptimization)] (i) =>
+                    {
+                        i = Global.DrawMap[i];
+                        if (noteBegins[i] == null) return;
+                        uint j, k, l;
+                        bool flag = false;
+                        bool isCurrentNotePressed;
+                        NoteRef* noteptr = noteBegins[i];
+                        while (noteptr->Start < tickup)
+                        {
+                            isCurrentNotePressed = false;
+                            if (noteptr == end[i]) break;
+                            if (noteptr->End >= tick)
+                            {
+                                l = Global.KeyColors[noteptr->Track % colorLen];
+                                if (!flag && (flag = true)) noteBegins[i] = noteptr;
+                                if (noteptr->Start < tick)
+                                {
+                                    k = (uint)keyHeight;
+                                    j = (uint)((noteptr->End - tick) * ppb);
+                                    canvas.KeyColors[i] = l;
+                                    canvas.KeyPressed[i] = true;
+                                    canvas.KeyTracks[i] = noteptr->Track;
+                                    isCurrentNotePressed = true;
+                                }
+                                else
+                                {
+                                    k = (uint)(((noteptr->Start - tick) * ppb) + keyHeight);
+                                    j = (uint)((noteptr->End - noteptr->Start) * ppb);
+                                }
+                                if (j + k > height) j = height - k;
+                                l = Global.NoteColors[noteptr->Track % colorLen];
+                                if (gradientNotes)
+                                    canvas.DrawGradientNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, isCurrentNotePressed);
+                                else
+                                    canvas.DrawNote((short)i, noteptr->Track % colorLen, (int)k, (int)j, l, isCurrentNotePressed);
+                            }
+                            ++noteptr;
+                        }
+                    });
+                }
                 if (useGPU)
                 {
                     openCLCanvas!.DrawNotesGPU();

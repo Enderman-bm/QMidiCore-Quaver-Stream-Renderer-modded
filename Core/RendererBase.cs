@@ -1,4 +1,4 @@
-﻿using SharpExtension.Collections;
+using SharpExtension.Collections;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,7 +10,6 @@ namespace QQS_UI.Core
     public abstract class RendererBase
     {
         protected readonly RenderFile renderFile;
-        protected readonly UnmanagedList<Note>[] noteMap;
         protected readonly UnmanagedList<Tempo> tempos;
 
         protected readonly ushort ppq;
@@ -25,7 +24,6 @@ namespace QQS_UI.Core
         public RendererBase(RenderFile file, in RenderOptions options)
         {
             renderFile = file;
-            noteMap = file.Notes;
             tempos = file.Tempos;
 
             ppq = file.Division;
